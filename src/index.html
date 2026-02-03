@@ -1,0 +1,383 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>One-Tap Tower Stack</title>
+  <style>
+    :root {
+      --bg: #0b1a17;
+      --bg-accent: #132a25;
+      --panel: #f7f3e8;
+      --ink: #0b1a17;
+      --accent: #e46d4f;
+      --accent-2: #5dd39e;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: radial-gradient(circle at top, #1c3a33, var(--bg));
+      font-family: "Trebuchet MS", "Lucida Sans Unicode", "Lucida Grande", "Lucida Sans", Arial, sans-serif;
+      color: var(--panel);
+    }
+
+    #app {
+      height: 100%;
+      display: grid;
+      place-items: center;
+      overflow: hidden;
+    }
+
+    canvas {
+      width: min(92vw, 520px);
+      height: min(92vh, 860px);
+      border-radius: 24px;
+      background: linear-gradient(180deg, #11322c, #091613);
+      box-shadow: 0 30px 80px rgba(0, 0, 0, 0.45);
+      display: block;
+    }
+
+    .overlay {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      pointer-events: none;
+    }
+
+    .card {
+      background: var(--panel);
+      color: var(--ink);
+      padding: 24px 28px;
+      border-radius: 20px;
+      width: min(90vw, 360px);
+      text-align: center;
+      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.3);
+      pointer-events: auto;
+    }
+
+    .card h1 {
+      margin: 0 0 10px;
+      font-size: 1.8rem;
+      letter-spacing: 0.02em;
+    }
+
+    .card p {
+      margin: 0 0 18px;
+      line-height: 1.4;
+    }
+
+    .card button {
+      background: var(--accent);
+      border: none;
+      color: #fff;
+      font-size: 1rem;
+      padding: 12px 22px;
+      border-radius: 999px;
+      cursor: pointer;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      transition: transform 0.15s ease, box-shadow 0.15s ease;
+    }
+
+    .card button:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 18px rgba(228, 109, 79, 0.4);
+    }
+
+    .hud {
+      position: absolute;
+      top: 24px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      gap: 16px;
+      background: rgba(247, 243, 232, 0.12);
+      padding: 10px 18px;
+      border-radius: 999px;
+      backdrop-filter: blur(6px);
+      font-size: 0.95rem;
+      letter-spacing: 0.02em;
+    }
+
+    .hud span {
+      color: #e9f3ef;
+      font-weight: 600;
+    }
+
+    @media (max-width: 480px) {
+      .hud { font-size: 0.85rem; }
+      .card h1 { font-size: 1.5rem; }
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <canvas id="game" width="520" height="860"></canvas>
+    <div class="hud" id="hud" hidden>
+      <span id="time">3:00</span>
+      <span id="score">Score 0</span>
+    </div>
+    <div class="overlay" id="overlay">
+      <div class="card" id="startCard">
+        <h1>One-Tap Tower Stack</h1>
+        <p>Drop moving blocks with a single tap. Stack as high as you can in 3 minutes!</p>
+        <button id="startBtn">Start Game</button>
+      </div>
+      <div class="card" id="endCard" hidden>
+        <h1>Time's Up!</h1>
+        <p id="finalScore">You stacked 0 blocks.</p>
+        <button id="restartBtn">Play Again</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const canvas = document.getElementById("game");
+    const ctx = canvas.getContext("2d");
+
+    const hud = document.getElementById("hud");
+    const timeEl = document.getElementById("time");
+    const scoreEl = document.getElementById("score");
+    const overlay = document.getElementById("overlay");
+    const startCard = document.getElementById("startCard");
+    const endCard = document.getElementById("endCard");
+    const finalScore = document.getElementById("finalScore");
+    const startBtn = document.getElementById("startBtn");
+    const restartBtn = document.getElementById("restartBtn");
+
+    const GAME_DURATION_MS = 3 * 60 * 1000;
+    const stack = [];
+    const palette = ["#5dd39e", "#f3bf5f", "#e46d4f", "#4e8098", "#f7f3e8"];
+
+    let state = "start"; // start | playing | gameover
+    let activeBlock = null;
+    let direction = 1;
+    let speed = 2.4;
+    let lastTime = 0;
+    let elapsed = 0;
+    let cameraY = 0;
+
+    const world = {
+      width: canvas.width,
+      height: canvas.height,
+      ground: canvas.height - 90,
+      blockHeight: 32,
+    };
+
+    function resetGame() {
+      stack.length = 0;
+      elapsed = 0;
+      speed = 2.4;
+      direction = 1;
+      cameraY = 0;
+      activeBlock = createBlock(world.width * 0.5, world.ground, 180, palette[0]);
+      stack.push(createBlock(world.width * 0.5, world.ground + world.blockHeight, 190, "#12332c"));
+      stack.push(createBlock(world.width * 0.5, world.ground + world.blockHeight * 2, 200, "#0c201c"));
+    }
+
+    function createBlock(x, y, width, color) {
+      return { x, y, width, color };
+    }
+
+    function spawnBlock() {
+      const last = stack[stack.length - 1];
+      const color = palette[stack.length % palette.length];
+      const startX = direction === 1 ? -last.width * 0.5 : world.width + last.width * 0.5;
+      activeBlock = createBlock(startX, last.y - world.blockHeight, last.width, color);
+      direction *= -1;
+    }
+
+    function dropBlock() {
+      if (!activeBlock || state !== "playing") return;
+      const last = stack[stack.length - 1];
+      const overlap = getOverlap(activeBlock, last);
+
+      if (overlap <= 0) {
+        endGame();
+        return;
+      }
+
+      const newWidth = overlap;
+      const directionSign = activeBlock.x < last.x ? 1 : -1;
+      const offset = (activeBlock.width - newWidth) * 0.5 * directionSign;
+      activeBlock.width = newWidth;
+      activeBlock.x += offset;
+      stack.push(activeBlock);
+      scoreEl.textContent = `Score ${stack.length - 1}`;
+
+      speed = Math.min(speed + 0.08, 6);
+      spawnBlock();
+    }
+
+    function getOverlap(a, b) {
+      const left = Math.max(a.x - a.width / 2, b.x - b.width / 2);
+      const right = Math.min(a.x + a.width / 2, b.x + b.width / 2);
+      return right - left;
+    }
+
+    function update(delta) {
+      if (state !== "playing") return;
+      elapsed += delta;
+      const remaining = Math.max(0, GAME_DURATION_MS - elapsed);
+      timeEl.textContent = formatTime(remaining);
+
+      if (remaining === 0) {
+        endGame();
+        return;
+      }
+
+      if (activeBlock) {
+        activeBlock.x += speed * direction;
+        const limit = world.width - activeBlock.width / 2;
+        const min = activeBlock.width / 2;
+        if (activeBlock.x > limit || activeBlock.x < min) {
+          direction *= -1;
+          activeBlock.x = Math.max(min, Math.min(limit, activeBlock.x));
+        }
+      }
+
+      updateCamera();
+    }
+
+    function draw() {
+      ctx.clearRect(0, 0, world.width, world.height);
+      drawParallax();
+
+      // ground
+      ctx.fillStyle = "#0a1f1b";
+      const groundY = world.ground + world.blockHeight - cameraY;
+      ctx.fillRect(0, groundY, world.width, world.height - groundY);
+
+      // stack
+      for (const block of stack) {
+        drawBlock(block);
+      }
+
+      if (activeBlock) drawBlock(activeBlock, true);
+
+      // top border line
+      ctx.strokeStyle = "rgba(255,255,255,0.08)";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(20, 80);
+      ctx.lineTo(world.width - 20, 80);
+      ctx.stroke();
+    }
+
+    function drawBlock(block, isActive = false) {
+      ctx.fillStyle = block.color;
+      ctx.shadowColor = isActive ? "rgba(93, 211, 158, 0.45)" : "rgba(0,0,0,0.2)";
+      ctx.shadowBlur = isActive ? 18 : 10;
+      ctx.fillRect(
+        block.x - block.width / 2,
+        block.y - world.blockHeight / 2 - cameraY,
+        block.width,
+        world.blockHeight
+      );
+      ctx.shadowBlur = 0;
+    }
+
+    function updateCamera() {
+      const reference = activeBlock || stack[stack.length - 1];
+      if (!reference) return;
+      const screenTop = world.height * 0.3;
+      const screenBottom = world.height * 0.7;
+      const screenY = reference.y - cameraY;
+      let target = cameraY;
+
+      if (screenY < screenTop) {
+        target = reference.y - screenTop;
+      } else if (screenY > screenBottom) {
+        target = reference.y - screenBottom;
+      }
+
+      cameraY += (target - cameraY) * 0.12;
+      if (cameraY < 0) cameraY = 0;
+    }
+
+    function drawParallax() {
+      const gradient = ctx.createLinearGradient(0, 0, 0, world.height);
+      gradient.addColorStop(0, "#173b34");
+      gradient.addColorStop(1, "#081311");
+      ctx.fillStyle = gradient;
+      ctx.fillRect(0, 0, world.width, world.height);
+
+      drawParallaxLayer(0.2, "rgba(93, 211, 158, 0.15)", 120, 40);
+      drawParallaxLayer(0.4, "rgba(228, 109, 79, 0.12)", 180, 70);
+      drawParallaxLayer(0.6, "rgba(247, 243, 232, 0.08)", 260, 90);
+    }
+
+    function drawParallaxLayer(factor, color, spacing, radius) {
+      const offset = (cameraY * factor) % spacing;
+      ctx.fillStyle = color;
+      for (let y = -spacing; y < world.height + spacing; y += spacing) {
+        for (let x = 40; x < world.width + spacing; x += spacing) {
+          ctx.beginPath();
+          ctx.ellipse(x, y + offset, radius, radius * 0.5, 0, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+    }
+
+    function formatTime(ms) {
+      const totalSeconds = Math.ceil(ms / 1000);
+      const minutes = Math.floor(totalSeconds / 60);
+      const seconds = totalSeconds % 60;
+      return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+    }
+
+    function startGame() {
+      resetGame();
+      state = "playing";
+      hud.hidden = false;
+      overlay.hidden = true;
+      scoreEl.textContent = "Score 0";
+      timeEl.textContent = "3:00";
+      spawnBlock();
+      lastTime = performance.now();
+      requestAnimationFrame(loop);
+    }
+
+    function endGame() {
+      state = "gameover";
+      hud.hidden = true;
+      overlay.hidden = false;
+      startCard.hidden = true;
+      endCard.hidden = false;
+      finalScore.textContent = `You stacked ${Math.max(0, stack.length - 1)} blocks.`;
+    }
+
+    function loop(timestamp) {
+      if (state !== "playing") return;
+      const delta = timestamp - lastTime;
+      lastTime = timestamp;
+      update(delta);
+      draw();
+      requestAnimationFrame(loop);
+    }
+
+    canvas.addEventListener("pointerdown", () => {
+      if (state === "playing") dropBlock();
+    });
+
+    startBtn.addEventListener("click", () => {
+      startCard.hidden = true;
+      endCard.hidden = true;
+      startGame();
+    });
+
+    restartBtn.addEventListener("click", () => {
+      startCard.hidden = true;
+      endCard.hidden = true;
+      startGame();
+    });
+
+    // Initial render
+    draw();
+  </script>
+</body>
+</html>
