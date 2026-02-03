@@ -153,6 +153,11 @@
     const stack = [];
     const palette = ["#5dd39e", "#f3bf5f", "#e46d4f", "#4e8098", "#f7f3e8"];
 
+    let HUB_ORIGIN = null;
+    let NONCE = null;
+    let SESSION_ID = null;
+    let endReported = false;
+
     let state = "start"; // start | playing | gameover
     let activeBlock = null;
     let direction = 1;
@@ -168,12 +173,65 @@
       blockHeight: 32,
     };
 
+    window.addEventListener("message", (event) => {
+      const msg = event.data;
+      if (!msg || typeof msg.type !== "string") return;
+
+      switch (msg.type) {
+        case "HUB_LAUNCH": {
+          HUB_ORIGIN = msg.hubOrigin || event.origin;
+          NONCE = msg.nonce;
+          window.parent.postMessage({ type: "GAME_READY", nonce: NONCE }, HUB_ORIGIN);
+          break;
+        }
+
+        case "SESSION_STARTED": {
+          if (msg.nonce !== NONCE) return;
+          SESSION_ID = msg.sessionId;
+          break;
+        }
+
+        case "SESSION_ENDED": {
+          if (msg.nonce !== NONCE) return;
+          SESSION_ID = null;
+          break;
+        }
+
+        case "ERROR": {
+          if (msg.nonce && NONCE && msg.nonce !== NONCE) return;
+          console.error("Hub error:", msg.code, msg.message);
+          break;
+        }
+      }
+    });
+
+    function requestStartSession() {
+      if (!HUB_ORIGIN || !NONCE) return;
+      window.parent.postMessage({ type: "START_REQUEST", nonce: NONCE }, HUB_ORIGIN);
+    }
+
+    function requestEndSession({ score, clientTimeMs }) {
+      if (!HUB_ORIGIN || !NONCE) return;
+      if (endReported) return;
+      endReported = true;
+      window.parent.postMessage(
+        {
+          type: "END_REQUEST",
+          nonce: NONCE,
+          score: Number(score),
+          clientTime: Number(clientTimeMs),
+        },
+        HUB_ORIGIN
+      );
+    }
+
     function resetGame() {
       stack.length = 0;
       elapsed = 0;
       speed = 2.4;
       direction = 1;
       cameraY = 0;
+      endReported = false;
       activeBlock = createBlock(world.width * 0.5, world.ground, 180, palette[0]);
       stack.push(createBlock(world.width * 0.5, world.ground + world.blockHeight, 190, "#12332c"));
       stack.push(createBlock(world.width * 0.5, world.ground + world.blockHeight * 2, 200, "#0c201c"));
@@ -339,16 +397,20 @@
       timeEl.textContent = "3:00";
       spawnBlock();
       lastTime = performance.now();
+      requestStartSession();
       requestAnimationFrame(loop);
     }
 
     function endGame() {
+      const score = Math.max(0, stack.length - 1);
+      const elapsedMs = Math.max(0, elapsed);
+      requestEndSession({ score, clientTimeMs: elapsedMs });
       state = "gameover";
       hud.hidden = true;
       overlay.hidden = false;
       startCard.hidden = true;
       endCard.hidden = false;
-      finalScore.textContent = `You stacked ${Math.max(0, stack.length - 1)} blocks.`;
+      finalScore.textContent = `You stacked ${score} blocks.`;
     }
 
     function loop(timestamp) {
