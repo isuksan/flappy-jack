@@ -19,6 +19,7 @@
     html, body {
       margin: 0;
       height: 100%;
+      overflow: hidden;
       background: radial-gradient(circle at top, #1c3a33, var(--bg));
       font-family: "Trebuchet MS", "Lucida Sans Unicode", "Lucida Grande", "Lucida Sans", Arial, sans-serif;
       color: var(--panel);
@@ -354,7 +355,6 @@
       }
 
       cameraY += (target - cameraY) * 0.12;
-      if (cameraY < 0) cameraY = 0;
     }
 
     function drawParallax() {
