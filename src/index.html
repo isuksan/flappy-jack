@@ -109,9 +109,43 @@
       font-weight: 600;
     }
 
+    .hub-toggle {
+      position: absolute;
+      inset: auto 20px 20px auto;
+      pointer-events: none;
+    }
+
+    .hub-toggle-card {
+      background: rgba(10, 31, 27, 0.85);
+      color: #e9f3ef;
+      display: grid;
+      gap: 6px;
+      padding: 12px 14px;
+      border-radius: 14px;
+      font-size: 0.85rem;
+      letter-spacing: 0.01em;
+      pointer-events: auto;
+    }
+
+    .hub-toggle-card strong {
+      font-size: 0.9rem;
+    }
+
+    .hub-toggle-card button {
+      justify-self: start;
+      background: #5dd39e;
+      border: none;
+      color: #0b1a17;
+      font-weight: 700;
+      padding: 6px 12px;
+      border-radius: 999px;
+      cursor: pointer;
+    }
+
     @media (max-width: 480px) {
       .hud { font-size: 0.85rem; }
       .card h1 { font-size: 1.5rem; }
+      .hub-toggle { inset: auto 14px 14px auto; }
     }
   </style>
 </head>
@@ -121,6 +155,13 @@
     <div class="hud" id="hud" hidden>
       <span id="time">3:00</span>
       <span id="score">Score 0</span>
+    </div>
+    <div class="hub-toggle" id="hubToggle" hidden>
+      <div class="hub-toggle-card">
+        <strong>Standalone Hub</strong>
+        <span>Enable iframe messages for local testing.</span>
+        <button id="hubToggleBtn">Enable</button>
+      </div>
     </div>
     <div class="overlay" id="overlay">
       <div class="card" id="startCard">
@@ -149,15 +190,19 @@
     const finalScore = document.getElementById("finalScore");
     const startBtn = document.getElementById("startBtn");
     const restartBtn = document.getElementById("restartBtn");
+    const hubToggle = document.getElementById("hubToggle");
+    const hubToggleBtn = document.getElementById("hubToggleBtn");
 
     const GAME_DURATION_MS = 3 * 60 * 1000;
     const stack = [];
     const palette = ["#5dd39e", "#f3bf5f", "#e46d4f", "#4e8098", "#f7f3e8"];
 
+    const STANDALONE = window.self === window.top;
     let HUB_ORIGIN = null;
     let NONCE = null;
     let SESSION_ID = null;
-    let endReported = false;
+    let sessionRequested = false;
+    let sessionEnded = false;
 
     let state = "start"; // start | playing | gameover
     let activeBlock = null;
@@ -174,56 +219,110 @@
       blockHeight: 32,
     };
 
-    window.addEventListener("message", (event) => {
-      const msg = event.data;
-      if (!msg || typeof msg.type !== "string") return;
+    function postToHub(payload) {
+      if (!HUB_ORIGIN || !NONCE) return;
+      if (STANDALONE) {
+        localHubReceive(payload);
+        return;
+      }
+      window.parent.postMessage(payload, HUB_ORIGIN);
+    }
 
+    function receiveHubMessage(msg, origin) {
+      if (!msg || typeof msg.type !== "string") return;
       switch (msg.type) {
         case "HUB_LAUNCH": {
-          HUB_ORIGIN = msg.hubOrigin || event.origin;
+          HUB_ORIGIN = msg.hubOrigin || origin;
           NONCE = msg.nonce;
-          window.parent.postMessage({ type: "GAME_READY", nonce: NONCE }, HUB_ORIGIN);
+          postToHub({ type: "GAME_READY", nonce: NONCE });
           break;
         }
-
         case "SESSION_STARTED": {
           if (msg.nonce !== NONCE) return;
-          SESSION_ID = msg.sessionId;
+          SESSION_ID = msg.sessionId || null;
           break;
         }
-
         case "SESSION_ENDED": {
           if (msg.nonce !== NONCE) return;
           SESSION_ID = null;
           break;
         }
-
         case "ERROR": {
           if (msg.nonce && NONCE && msg.nonce !== NONCE) return;
           console.error("Hub error:", msg.code, msg.message);
           break;
         }
       }
-    });
-
-    function requestStartSession() {
-      if (!HUB_ORIGIN || !NONCE) return;
-      window.parent.postMessage({ type: "START_REQUEST", nonce: NONCE }, HUB_ORIGIN);
     }
 
-    function requestEndSession({ score, clientTimeMs }) {
-      if (!HUB_ORIGIN || !NONCE) return;
-      if (endReported) return;
-      endReported = true;
-      window.parent.postMessage(
-        {
-          type: "END_REQUEST",
-          nonce: NONCE,
-          score: Number(score),
-          clientTime: Number(clientTimeMs),
-        },
+    function requestStartSession() {
+      if (!HUB_ORIGIN || !NONCE || sessionRequested) return;
+      sessionRequested = true;
+      sessionEnded = false;
+      postToHub({ type: "START_REQUEST", nonce: NONCE });
+    }
+
+    function requestEndSession(score, clientTimeMs) {
+      if (!HUB_ORIGIN || !NONCE || sessionEnded || !sessionRequested) return;
+      sessionEnded = true;
+      postToHub({
+        type: "END_REQUEST",
+        nonce: NONCE,
+        score: Number(score),
+        clientTime: Number(clientTimeMs),
+        clientHash: "",
+      });
+    }
+
+    function localHubReceive(msg) {
+      if (!msg || typeof msg.type !== "string") return;
+      switch (msg.type) {
+        case "GAME_READY":
+          break;
+        case "START_REQUEST": {
+          receiveHubMessage(
+            {
+              type: "SESSION_STARTED",
+              nonce: NONCE,
+              sessionId: `local_${Math.random().toString(16).slice(2, 10)}`,
+              startTime: new Date().toISOString(),
+            },
+            HUB_ORIGIN
+          );
+          break;
+        }
+        case "END_REQUEST": {
+          receiveHubMessage(
+            {
+              type: "SESSION_ENDED",
+              nonce: NONCE,
+              finalScore: msg.score,
+              rewards: { stars: 0, coins: 0, experience: 0 },
+            },
+            HUB_ORIGIN
+          );
+          break;
+        }
+      }
+    }
+
+    function enableStandaloneHub() {
+      if (!STANDALONE) return;
+      if (HUB_ORIGIN && NONCE) return;
+      HUB_ORIGIN = window.location.origin;
+      NONCE = Math.random().toString(36).slice(2, 12);
+      receiveHubMessage(
+        { type: "HUB_LAUNCH", nonce: NONCE, hubOrigin: HUB_ORIGIN, gameId: "local-dev" },
         HUB_ORIGIN
       );
+    }
+
+    window.addEventListener("message", (event) => {
+      receiveHubMessage(event.data, event.origin);
+    });
+
+    if (STANDALONE) {
+      hubToggle.hidden = false;
     }
 
     function resetGame() {
@@ -232,7 +331,8 @@
       speed = 2.4;
       direction = 1;
       cameraY = 0;
-      endReported = false;
+      sessionRequested = false;
+      sessionEnded = false;
       activeBlock = createBlock(world.width * 0.5, world.ground, 180, palette[0]);
       stack.push(createBlock(world.width * 0.5, world.ground + world.blockHeight, 190, "#12332c"));
       stack.push(createBlock(world.width * 0.5, world.ground + world.blockHeight * 2, 200, "#0c201c"));
@@ -395,21 +495,20 @@
       overlay.hidden = true;
       scoreEl.textContent = "Score 0";
       timeEl.textContent = "3:00";
+      requestStartSession();
       spawnBlock();
       lastTime = performance.now();
-      requestStartSession();
       requestAnimationFrame(loop);
     }
 
     function endGame() {
-      const score = Math.max(0, stack.length - 1);
-      const elapsedMs = Math.max(0, elapsed);
-      requestEndSession({ score, clientTimeMs: elapsedMs });
       state = "gameover";
       hud.hidden = true;
       overlay.hidden = false;
       startCard.hidden = true;
       endCard.hidden = false;
+      const score = Math.max(0, stack.length - 1);
+      requestEndSession(score, elapsed);
       finalScore.textContent = `You stacked ${score} blocks.`;
     }
 
@@ -436,6 +535,11 @@
       startCard.hidden = true;
       endCard.hidden = true;
       startGame();
+    });
+
+    hubToggleBtn.addEventListener("click", () => {
+      enableStandaloneHub();
+      hubToggle.hidden = true;
     });
 
     // Initial render
